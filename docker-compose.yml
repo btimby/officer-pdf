@@ -1,0 +1,11 @@
+version: '3'
+
+services:
+  soffice:
+    build: .
+    ports:
+      - 8008:8080
+    volumes:
+      - ./rest:/app:ro
+    environment:
+      - MAX_CONCURENCY=1
