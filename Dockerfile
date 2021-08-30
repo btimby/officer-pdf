@@ -20,7 +20,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 ADD rest/ /app/
+ADD Pipfile /app/Pipfile
+ADD Pipfile.lock /app/Pipfile.lock
+
 WORKDIR /app
+
 RUN pipenv install --system
 
 ENTRYPOINT ["python3", "/app/"]
