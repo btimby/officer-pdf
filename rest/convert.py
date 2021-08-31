@@ -249,7 +249,18 @@ class Connection(object):
         LOGGER.debug('in_url: %s', url)
         LOGGER.debug('in_props: %s', pprint.pformat(in_props))
 
-        doc = self.desktop.loadComponentFromURL(url, "_blank", 0, in_props)
+        for i in range(3):
+            try:
+                doc = self.desktop.loadComponentFromURL(
+                    url, "_blank", 0, in_props)
+                break
+
+            except Exception as e:
+                LOGGER.exception(e)
+                if i == 2:
+                    raise
+                LOGGER.info('Retrying connection to soffice')
+                time.sleep(0.5)
 
         out_props = output_props(doc, format, pages)
         out_stream = None
@@ -280,8 +291,6 @@ class Connection(object):
             except AttributeError:
                 pass
 
-            # TODO: for input above MAX_MEMORY, we should probably write
-            # output to disk.
             doc.storeToURL(out_url, out_props)
 
         finally:
@@ -379,11 +388,11 @@ async def convert(*args, **kwargs):
             # Get a reference to BytesIO.
             f = f._file._file
             kwargs['data'] = f.getvalue()
-            LOGGER.debug('Read %i bytes into buffer', f.tell())
+            LOGGER.debug('Read %i bytes into buffer', kwargs['size'])
 
         else:
             kwargs['url'] = unohelper.systemPathToFileUrl(f._file.name)
-            LOGGER.debug('File is %i bytes', os.path.getsize(f._file.name))
+            LOGGER.debug('File is %i bytes', kwargs['size'])
 
     # NOTE: we use an executor here for a few reasons:
     # - This call is blocking, so we want it in a background thread. Since it

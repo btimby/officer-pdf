@@ -4,14 +4,20 @@ soffice container / REST API, facilitates conversion of office documents to pdf.
 ## Usage
 
 ```bash
-$ docker run -ti -p 8080:8080 btimby/soffice-rest
+$ docker run -ti -p 8080:8080 btimby/officer-pdf
 $ curl --output test.pdf \
        --header "Content-Type: application/vnd.oasis.opendocument.text" \
        --data-binary @"test.odt" http://localhost:8008/pdf/?pages=1-1
+
 $ # OR - send a URL:
 $ curl --output test.pdf http://localhost:8008/pdf/?url=https://google.com/
+
 $ # OR - send a path:
 $ curl --output test.pdf http://localhost:8008/pdf/?url=file:///documents/foo.odt
+
+$ # OR the same as above with png output:
+$ curl --output test.png http://localhost:8008/png/?url=https:/google.com/
+
 $ # To perform a health check:
 $ curl http://localhost:8000/
 ```
@@ -66,3 +72,12 @@ to retrieve the file size and content type.
 
 The health check converts a trivial block of text to a PDF and reports a 200
 if it succeeds and a 503 if not.
+
+When using local file URLs, be sure to map in any files you want to be
+accessible.
+
+```bash
+$ docker run -ti -v /path/to/files:/path/to/files:ro -p 8008:8008 btimby/officer-pdf
+
+$ curl --output test.pdf http://localhost:8008/pdf/?url=file:///path/to/files/myfile.docx
+```
