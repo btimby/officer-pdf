@@ -2,14 +2,15 @@ import os
 import sys
 import asyncio
 import subprocess
-import functools
 import os.path
 import time
 import threading
+import tempfile
 import logging
 import mimetypes
 import pprint
 
+from functools import partial
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import gettempdir
@@ -23,10 +24,9 @@ from com.sun.star.io import IOException, XOutputStream
 from com.sun.star.script import CannotConvertException
 from com.sun.star.uno import RuntimeException
 
+from config import MAX_MEMORY, MAX_CONCURRENCY
 
-# NOTE: 1 is strongly encouraged, to restrict client connections to 1 at a
-# time.
-MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", 1))
+
 # A pool of workers to perform conversions to pdf.
 EXECUTOR = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY)
 
@@ -103,7 +103,7 @@ IMPORT_FILTERS = {
     '.sxi': 'StarOffice XML (Impress)',
     '.sxw': 'StarOffice XML (Writer)',
     '.tiff': 'draw_tif_Export',
-    '.txt': 'MediaWiki',
+    '.txt': 'Text',
     '.uop': 'UOF presentation',
     '.uos': 'UOF spreadsheet',
     '.uot': 'UOF text',
@@ -152,7 +152,7 @@ def input_props(content_type):
     return property_tuple(props)
 
 
-def output_props(doc, output_stream, pages=None):
+def output_props(doc, pages=None):
     filter = PDF_FILTERS[DEFAULT_FILTER]
     for k, v in PDF_FILTERS.items():
         if doc.supportsService(k):
@@ -161,7 +161,6 @@ def output_props(doc, output_stream, pages=None):
     props = property_tuple({
         "FilterName": filter,
         "Overwrite": True,
-        "OutputStream": output_stream,
         "ReduceImageResolution": True,
         "MaxImageResolution": 300,
         "SelectPdfVersion": 1,
@@ -227,7 +226,8 @@ class Connection(object):
         stream.initialize((seq,))
         return stream, "private:stream"
 
-    def convert(self, url=None, data=None, content_type=None, pages=None):
+    def convert(self, url=None, data=None, content_type=None, pages=None,
+                size=None):
         # Ulitmately, this is the function called by convert()
         in_props = input_props(content_type)
 
@@ -235,14 +235,28 @@ class Connection(object):
             in_stream, url = self.input_stream(data)
             in_props += (property("InputStream", in_stream),)
 
-        LOGGER.debug('input_props: %s', pprint.pformat(in_props))
+        LOGGER.debug('in_url: %s', url)
+        LOGGER.debug('in_props: %s', pprint.pformat(in_props))
 
         doc = self.desktop.loadComponentFromURL(url, "_blank", 0, in_props)
 
-        out_stream = OutputStream()
-        out_props = output_props(doc, out_stream, pages)
+        out_props = output_props(doc, pages)
+        out_stream = None
 
-        LOGGER.debug('output_props: %s', pprint.pformat(out_props))
+        # We estimate the PDF size to be close to the input file size. If it
+        # is expected to be large, we write to disk.
+        if size <= MAX_MEMORY:
+            out_stream = OutputStream()
+            out_props += (property("OutputStream", out_stream),)
+            out_url = "private:stream"
+
+        else:
+            _fd, out_url = tempfile.mkstemp(suffix='.pdf')
+            os.close(_fd)
+            out_url = unohelper.systemPathToFileUrl(out_url)
+
+        LOGGER.debug('out_url: %s', out_url)
+        LOGGER.debug('out_props: %s', pprint.pformat(out_props))
 
         try:
             try:
@@ -257,14 +271,20 @@ class Connection(object):
 
             # TODO: for input above MAX_MEMORY, we should probably write
             # output to disk.
-            doc.storeToURL("private:stream", out_props)
+            doc.storeToURL(out_url, out_props)
 
         finally:
             doc.dispose()
             doc.close(True)
-        
-        pdf = out_stream.getvalue()
-        LOGGER.debug('len(out_stream): %s', len(pdf))
+
+        if out_stream:
+            pdf = BytesIO(out_stream.getvalue())
+
+        else:
+            # NOTE: strip off file://
+            pdf = open(out_url[7:], 'rb')
+
+        LOGGER.debug('PDF as: %s', pdf.__class__)
         return pdf
 
 
@@ -325,7 +345,13 @@ def _convert(*args, **kwargs):
     for i, arg in enumerate(args):
         LOGGER.debug('[%i]: %s', i, arg)
     for n, v in kwargs.items():
-        LOGGER.debug('[%s]: %s', n, v)
+        try:
+            length = len(v)
+            if length > 100:
+                v = length
+        except (TypeError, ValueError):
+            pass
+        LOGGER.debug('["%s"]: %s', n, v)
     return Connection().convert(*args, **kwargs)
 
 
@@ -343,9 +369,9 @@ async def convert(*args, **kwargs):
             f = f._file._file
             kwargs['data'] = f.getvalue()
             LOGGER.debug('Read %i bytes into buffer', f.tell())
+
         else:
             kwargs['url'] = unohelper.systemPathToFileUrl(f._file.name)
-            LOGGER.debug('Using file URL: %s', kwargs['url'])
             LOGGER.debug('File is %i bytes', os.path.getsize(f._file.name))
 
     # NOTE: we use an executor here for a few reasons:
@@ -353,7 +379,7 @@ async def convert(*args, **kwargs):
     #   is mostly I/O, this should be a good choice.
     # - We want to only have one request at a time to soffice. Since we have a
     #   single threaded executor, we achieve this without extra work.
-    return await loop.run_in_executor(EXECUTOR, functools.partial(_convert, *args, **kwargs))
+    return await loop.run_in_executor(EXECUTOR, partial(_convert, *args, **kwargs))
 
 
 # Start the process early.

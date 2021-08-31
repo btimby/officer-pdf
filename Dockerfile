@@ -8,11 +8,11 @@ RUN apt-get update && \
     apt-get -y install \
     ure libreoffice libreoffice-core libreoffice-java-common libreoffice-common \
     libreoffice-writer libreoffice-impress libreoffice-calc libreoffice-draw \
-    openjdk-17-jre fonts-opensymbol hyphen-fr hyphen-de hyphen-en-us \
-    hyphen-it hyphen-ru fonts-dejavu fonts-dejavu-core fonts-dejavu-extra \
-    fonts-droid-fallback fonts-dustin fonts-f500 fonts-fanwood \
-    fonts-freefont-ttf fonts-liberation fonts-lmodern fonts-lyx \
-    fonts-sil-gentium fonts-texgyre fonts-tlwg-purisa python3-pip \
+    fonts-opensymbol hyphen-fr hyphen-de hyphen-en-us hyphen-it hyphen-ru \
+    fonts-dejavu fonts-dejavu-core fonts-dejavu-extra fonts-droid-fallback \
+    fonts-dustin fonts-f500 fonts-fanwood fonts-freefont-ttf \
+    fonts-liberation fonts-lmodern fonts-lyx fonts-sil-gentium fonts-texgyre \
+    fonts-tlwg-purisa python3-pip \
     python3-uno pipenv && \
     apt-get -y upgrade && \
     apt-get -y autoremove && \

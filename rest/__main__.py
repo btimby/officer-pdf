@@ -7,12 +7,13 @@ import aiofiles
 import aiohttp
 import os.path
 
+from functools import partial
 from io import BytesIO
 from aiohttp import web
 
 from convert import convert
 from config import (
-    MAX_CHUNK, MAX_MEMORY, TEMP_DIR,
+    MAX_CHUNK, MAX_MEMORY, TEMP_DIR, MAX_CONCURRENCY,
 )
 from spooled import NamedSpooledTemporaryFile
 
@@ -22,12 +23,15 @@ logging.getLogger().setLevel(logging.DEBUG)
 
 
 async def copyfileobj(src, dst, length=None):
+    size = 0
     while True:
         chunk = await src.read(length)
         if not chunk:
             break
+        size += len(chunk)
         await dst.write(chunk)
     await dst.flush()
+    return size
 
 
 async def download(url, **kwargs):
@@ -37,15 +41,16 @@ async def download(url, **kwargs):
             temp = NamedSpooledTemporaryFile(
                 max_size=MAX_MEMORY, mode='wb+', dir=TEMP_DIR, suffix=extension)
 
-            await copyfileobj(request.content, temp, length=MAX_CHUNK)
-            return temp
+            size = await copyfileobj(request.content, temp, length=MAX_CHUNK)
+            return temp, size
 
 
 async def head(url):
     async with aiohttp.ClientSession() as s:
         async with s.head(url) as r:
             content_type = r.headers['content-type']
-            return content_type.split(';')[0]
+            size = int(r.headers['content-length'])
+            return content_type.split(';')[0], size
 
 
 def get_pages(request):
@@ -64,15 +69,29 @@ def get_pages(request):
     return pages
 
 
-async def health(request):
-    try:
-        pdf = await('Health check')
+class TempfileResponse(web.FileResponse):
+    '''
+    A FileResponse subclass that cleans up the file after the response.
+    '''
+    async def prepare(self, *args, **kwargs):
+        try:
+            return await super(TempfileResponse, self).prepare(
+                *args, **kwargs)
 
-    except:
-        return web.Response(text='ERROR', status=503)
+        finally:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, partial(os.unlink, self._path))
 
+
+def make_response(pdf):
+    if isinstance(pdf, BytesIO):
+        response = web.Response(body=pdf.getvalue())
+    
     else:
-        return web.Response(text='OK')
+        response = TempfileResponse(path=pdf.name)
+
+    response.content_type = 'application/pdf'
+    return response
 
 
 async def pdf_get(request):
@@ -88,6 +107,7 @@ async def pdf_get(request):
         # This is a local URL, try to guess the content_type.
         kwargs['url'], (kwargs['content_type'], _) = \
             url, mimetypes.guess_type(url)
+        kwargs['size'] = os.path.getsize(url)
 
     if headers or cookies:
         # We have to do the fetch, soffice does not support headers or other
@@ -95,13 +115,14 @@ async def pdf_get(request):
         headers = json.loads(headers)
         cookies = json.loads(cookies)
 
-        kwargs['file'], kwargs['content_type'] = \
+        kwargs['file'], kwargs['content_type'], kwargs['size'] = \
              await download(url, headers=headers, cookies=cookies)
 
     else:
         # We will let soffice do the request. We omit content_type here, as
         # soffice can use the Content-Type header it receives.
-        kwargs['url'], kwargs['content_type'] = url, await head(url)
+        kwargs['url'] = url
+        kwargs['content_type'], kwargs['size'] = await head(url)
 
     try:
         pdf = await convert(**kwargs)
@@ -116,9 +137,7 @@ async def pdf_get(request):
             f = f._file._file
             os.unlink(f.name)
 
-    response = web.Response(body=pdf)
-    response.content_type = 'application/pdf'
-    return response
+    return make_response(pdf)
 
 
 async def pdf_post(request):
@@ -130,25 +149,39 @@ async def pdf_post(request):
         max_size=MAX_MEMORY, mode='w+b', dir=TEMP_DIR,
         suffix=extension) as temp:
 
-        await copyfileobj(request.content, temp, length=MAX_CHUNK)
+        size = await copyfileobj(request.content, temp, length=MAX_CHUNK)
 
         LOGGER.debug('Body content_type: %s', content_type)
         LOGGER.info('Body read: %i bytes', await temp.tell())
 
         try:
             pdf = await convert(
-                file=temp, content_type=content_type, pages=pages)
+                file=temp, content_type=content_type, pages=pages, size=size)
 
         except Exception as e:
             LOGGER.exception(e)
             raise web.HTTPInternalServerError(reason='Internal Server Error')
 
-        response = web.Response(body=pdf)
-        response.content_type = 'application/pdf'
-        return response
+        return make_response(pdf)
 
 
+async def health(request):
+    try:
+        pdf = await convert(data=b'Health check', content_type='text/plain')
+
+    except Exception as e:
+        LOGGER.exception(e)
+        return web.Response(text='ERROR', status=503)
+
+    else:
+        return web.Response(text='OK')
+
+
+LOGGER.debug('MAX_CONCURRENCY: %i', MAX_MEMORY)
 LOGGER.debug('MAX_MEMORY: %i', MAX_MEMORY)
+LOGGER.debug('MAX_CHUNK: %i', MAX_MEMORY)
+LOGGER.debug('TEMP_DIR: %i', MAX_MEMORY)
+
 app = web.Application()
 app.add_routes([
     web.get('/', health),

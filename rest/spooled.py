@@ -7,7 +7,10 @@ from aiofiles.tempfile import AsyncSpooledTemporaryFile
 
 
 class _NamedSpooledTemporaryFile(tempfile.SpooledTemporaryFile):
+    """Class that ensures a NamedTemporaryFile is used on disk."""
+
     def rollover(self):
+        """Overridden to provide a NamedTemporaryFile."""
         if self._rolled: return
         file = self._file
         newfile = self._file = tempfile.NamedTemporaryFile(**self._TemporaryFileArgs)
@@ -23,9 +26,10 @@ class _NamedSpooledTemporaryFile(tempfile.SpooledTemporaryFile):
         self._rolled = True
 
 
-async def _spooled_temporary_file(max_size=0, mode='w+b', buffering=-1,
-                                  encoding=None, newline=None, suffix=None,
-                                  prefix=None, dir=None, loop=None, executor=None):
+async def _named_spooled_temporary_file(max_size=0, mode='w+b', buffering=-1,
+                                        encoding=None, newline=None,
+                                        suffix=None, prefix=None, dir=None,
+                                        loop=None, executor=None):
     """Open a spooled temporary file with async interface"""
     if loop is None:
         loop = asyncio.get_event_loop()
@@ -42,4 +46,5 @@ async def _spooled_temporary_file(max_size=0, mode='w+b', buffering=-1,
 
 
 def NamedSpooledTemporaryFile(*args, **kwargs):
-    return AiofilesContextManager(_spooled_temporary_file(*args, **kwargs))
+    return AiofilesContextManager(
+        _named_spooled_temporary_file(*args, **kwargs))
