@@ -94,76 +94,81 @@ def make_response(pdf):
     return response
 
 
-async def pdf_get(request):
-    url, headers, cookies = request.query.get('url'), None, None
-    kwargs = {}
+def make_get_handler(format):
+    async def handler(request):
+        url, headers, cookies = request.query.get('url'), None, None
+        kwargs = {}
 
-    if url.startswith('http'):
-        # This is a remote URL, could be additional options provided.
-        headers = request.query.get('headers')
-        cookies = request.query.get('cookies')
+        if url.startswith('http'):
+            # This is a remote URL, could be additional options provided.
+            headers = request.query.get('headers')
+            cookies = request.query.get('cookies')
 
-    else:
-        # This is a local URL, try to guess the content_type.
-        kwargs['url'], (kwargs['content_type'], _) = \
-            url, mimetypes.guess_type(url)
-        kwargs['size'] = os.path.getsize(url)
+        else:
+            # This is a local URL, try to guess the content_type.
+            kwargs['url'], (kwargs['content_type'], _) = \
+                url, mimetypes.guess_type(url)
+            kwargs['size'] = os.path.getsize(url)
 
-    if headers or cookies:
-        # We have to do the fetch, soffice does not support headers or other
-        # advanced options.
-        headers = json.loads(headers)
-        cookies = json.loads(cookies)
+        if headers or cookies:
+            # We have to do the fetch, soffice does not support headers or other
+            # advanced options.
+            headers = json.loads(headers)
+            cookies = json.loads(cookies)
 
-        kwargs['file'], kwargs['content_type'], kwargs['size'] = \
-             await download(url, headers=headers, cookies=cookies)
+            kwargs['file'], kwargs['content_type'], kwargs['size'] = \
+                await download(url, headers=headers, cookies=cookies)
 
-    else:
-        # We will let soffice do the request. We omit content_type here, as
-        # soffice can use the Content-Type header it receives.
-        kwargs['url'] = url
-        kwargs['content_type'], kwargs['size'] = await head(url)
-
-    try:
-        pdf = await convert(**kwargs)
-
-    except Exception as e:
-        LOGGER.exception(e)
-        raise web.HTTPInternalServerError(reason='Internal Server Error')
-
-    finally:
-        f = kwargs.get('file')
-        if hasattr(f, '_file') and getattr(f._file, '_rolled', None) is True:
-            f = f._file._file
-            os.unlink(f.name)
-
-    return make_response(pdf)
-
-
-async def pdf_post(request):
-    content_type = request.content_type
-    pages = get_pages(request)
-    extension = mimetypes.guess_extension(content_type)
-
-    async with NamedSpooledTemporaryFile(
-        max_size=MAX_MEMORY, mode='w+b', dir=TEMP_DIR,
-        suffix=extension) as temp:
-
-        size = await copyfileobj(request.content, temp, length=MAX_CHUNK)
-
-        LOGGER.debug('Body content_type: %s', content_type)
-        LOGGER.info('Body read: %i bytes', await temp.tell())
+        else:
+            # We will let soffice do the request. We omit content_type here, as
+            # soffice can use the Content-Type header it receives.
+            kwargs['url'] = url
+            kwargs['content_type'], kwargs['size'] = await head(url)
 
         try:
-            pdf = await convert(
-                file=temp, content_type=content_type, pages=pages, size=size)
+            pdf = await convert(format, **kwargs)
 
         except Exception as e:
             LOGGER.exception(e)
             raise web.HTTPInternalServerError(reason='Internal Server Error')
 
+        finally:
+            f = kwargs.get('file')
+            if hasattr(f, '_file') and getattr(f._file, '_rolled', None) is True:
+                f = f._file._file
+                os.unlink(f.name)
+
         return make_response(pdf)
 
+    return handler
+
+
+def make_post_handler(format):
+    async def handler(request):
+        content_type = request.content_type
+        pages = get_pages(request)
+        extension = mimetypes.guess_extension(content_type)
+
+        async with NamedSpooledTemporaryFile(
+            max_size=MAX_MEMORY, mode='w+b', dir=TEMP_DIR,
+            suffix=extension) as temp:
+
+            size = await copyfileobj(request.content, temp, length=MAX_CHUNK)
+
+            LOGGER.debug('Body content_type: %s', content_type)
+            LOGGER.info('Body read: %i bytes', await temp.tell())
+
+            try:
+                pdf = await convert(format, file=temp, content_type=content_type,
+                                    pages=pages, size=size)
+
+            except Exception as e:
+                LOGGER.exception(e)
+                raise web.HTTPInternalServerError(reason='Internal Server Error')
+
+            return make_response(pdf)
+
+    return handler
 
 async def health(request):
     try:
@@ -185,7 +190,9 @@ LOGGER.debug('TEMP_DIR: %i', MAX_MEMORY)
 app = web.Application()
 app.add_routes([
     web.get('/', health),
-    web.get('/pdf/', pdf_get),
-    web.post('/pdf/', pdf_post)
+    web.get('/pdf/', make_get_handler('pdf')),
+    web.post('/pdf/', make_post_handler('pdf')),
+    web.get('/png/', make_get_handler('png')),
+    web.post('/png/', make_post_handler('png')),
 ])
 web.run_app(app)

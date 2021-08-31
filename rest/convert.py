@@ -27,7 +27,7 @@ from com.sun.star.uno import RuntimeException
 from config import MAX_MEMORY, MAX_CONCURRENCY
 
 
-# A pool of workers to perform conversions to pdf.
+# A pool of workers to perform conversions.
 EXECUTOR = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY)
 
 SOFFICE = None
@@ -35,11 +35,21 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 DEFAULT_FILTER = "com.sun.star.text.GenericTextDocument"
-PDF_FILTERS = {
-    "com.sun.star.text.GenericTextDocument": "writer_pdf_Export",
-    "com.sun.star.text.WebDocument": "writer_web_pdf_Export",
-    "com.sun.star.presentation.PresentationDocument": "impress_pdf_Export",
-    "com.sun.star.drawing.DrawingDocument": "draw_pdf_Export",
+FILTERS = {
+    "pdf": {
+        "com.sun.star.text.GenericTextDocument": "writer_pdf_Export",
+        "com.sun.star.sheet.SpreadsheetDocument": "calc_pdf_Export",
+        "com.sun.star.text.WebDocument": "writer_web_pdf_Export",
+        "com.sun.star.presentation.PresentationDocument": "impress_pdf_Export",
+        "com.sun.star.drawing.DrawingDocument": "draw_pdf_Export",
+    },
+    "png": {
+        "com.sun.star.text.GenericTextDocument": "writer_png_Export",
+        "com.sun.star.sheet.SpreadsheetDocument": "calc_png_Export",
+        "com.sun.star.text.WebDocument": "writer_web_png_Export",
+        "com.sun.star.presentation.PresentationDocument": "impress_png_Export",
+        "com.sun.star.drawing.DrawingDocument": "draw_png_Export",
+    }
 }
 IMPORT_FILTERS = {
     '.bib': 'BibTeX_Writer',
@@ -119,7 +129,6 @@ IMPORT_FILTERS = {
 }
 
 
-
 def property(name, value):
     prop = PropertyValue()
     prop.Name = name
@@ -152,9 +161,10 @@ def input_props(content_type):
     return property_tuple(props)
 
 
-def output_props(doc, pages=None):
-    filter = PDF_FILTERS[DEFAULT_FILTER]
-    for k, v in PDF_FILTERS.items():
+def output_props(doc, format, pages=None):
+    filters = FILTERS[format]
+    filter = filters[DEFAULT_FILTER]
+    for k, v in filters.items():
         if doc.supportsService(k):
             filter = v
             break
@@ -163,8 +173,9 @@ def output_props(doc, pages=None):
         "Overwrite": True,
         "ReduceImageResolution": True,
         "MaxImageResolution": 300,
-        "SelectPdfVersion": 1,
     })
+    if format == 'pdf':
+        props += (property("SelectPdfVersion", 1),)
     if pages:
         page_range = tuple([
             PropertyValue('PageRange', 0, '%i-%i' % pages, 0)
@@ -178,7 +189,7 @@ def output_props(doc, pages=None):
 
 class OutputStream(unohelper.Base, XOutputStream):
     """
-    Simple class to receive pdf from soffice.
+    Simple class to receive output from soffice.
     """
     def __init__(self):
         self.f = BytesIO()
@@ -226,7 +237,7 @@ class Connection(object):
         stream.initialize((seq,))
         return stream, "private:stream"
 
-    def convert(self, url=None, data=None, content_type=None, pages=None,
+    def convert(self, format, url=None, data=None, content_type=None, pages=None,
                 size=None):
         # Ulitmately, this is the function called by convert()
         in_props = input_props(content_type)
@@ -240,10 +251,10 @@ class Connection(object):
 
         doc = self.desktop.loadComponentFromURL(url, "_blank", 0, in_props)
 
-        out_props = output_props(doc, pages)
+        out_props = output_props(doc, format, pages)
         out_stream = None
 
-        # We estimate the PDF size to be close to the input file size. If it
+        # We estimate the output size to be close to the input file size. If it
         # is expected to be large, we write to disk.
         if size <= MAX_MEMORY:
             out_stream = OutputStream()
@@ -251,7 +262,7 @@ class Connection(object):
             out_url = "private:stream"
 
         else:
-            _fd, out_url = tempfile.mkstemp(suffix='.pdf')
+            _fd, out_url = tempfile.mkstemp(suffix='.%s' % format)
             os.close(_fd)
             out_url = unohelper.systemPathToFileUrl(out_url)
 
@@ -278,14 +289,14 @@ class Connection(object):
             doc.close(True)
 
         if out_stream:
-            pdf = BytesIO(out_stream.getvalue())
+            output = BytesIO(out_stream.getvalue())
 
         else:
             # NOTE: strip off file://
-            pdf = open(out_url[7:], 'rb')
+            output = open(out_url[7:], 'rb')
 
-        LOGGER.debug('PDF as: %s', pdf.__class__)
-        return pdf
+        LOGGER.debug('%s as: %s', format, output.__class__)
+        return output
 
 
 class SOffice(object):
@@ -340,8 +351,8 @@ class SOffice(object):
             time.sleep(1.0)
 
 
-def _convert(*args, **kwargs):
-    LOGGER.debug('Converting document, arguments...')
+def _convert(format, *args, **kwargs):
+    LOGGER.debug('Converting document to %s, arguments...', format)
     for i, arg in enumerate(args):
         LOGGER.debug('[%i]: %s', i, arg)
     for n, v in kwargs.items():
@@ -352,7 +363,7 @@ def _convert(*args, **kwargs):
         except (TypeError, ValueError):
             pass
         LOGGER.debug('["%s"]: %s', n, v)
-    return Connection().convert(*args, **kwargs)
+    return Connection().convert(format, *args, **kwargs)
 
 
 async def convert(*args, **kwargs):
